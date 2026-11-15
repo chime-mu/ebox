@@ -119,8 +119,12 @@ defmodule Ebox.Auth do
            ),
          {:ok, %{"userToken" => user_token}} <-
            post(:user_token, @usertoken_url,
+             # The request has no content, but the server answers 411 to a POST
+             # without Content-Length, and Req only sends one when there is a body.
+             body: "",
              auth: {:bearer, digitalpost_token},
              headers: [
+               {"content-length", "0"},
                {"x-operation-id", "LoginService_UserToken"},
                {"content-type", "application/json-patch+json"}
              ]

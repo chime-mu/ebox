@@ -184,7 +184,12 @@ defmodule Ebox.FakeEboks do
   defp activation("digitalpostproxy.e-boks.dk", "/loginservice/v2/connect/usertoken", conn, _) do
     ["Bearer dp-token"] = get_req_header(conn, "authorization")
     ["LoginService_UserToken"] = get_req_header(conn, "x-operation-id")
-    Req.Test.json(conn, %{userToken: "user-token"})
+
+    # The real service answers 411 Length Required to a POST without a body.
+    case get_req_header(conn, "content-length") do
+      [_] -> Req.Test.json(conn, %{userToken: "user-token"})
+      [] -> send_resp(conn, 411, "Length Required")
+    end
   end
 
   defp activation("oauth-dk.e-boks.com", "/1/connect/token", conn, agent) do
