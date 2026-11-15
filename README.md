@@ -1,92 +1,163 @@
 # Ebox
 
-An Elixir connector for [e-Boks](https://www.e-boks.dk), the Danish digital
-mailbox. It speaks the API of the official mobile app and is read-only: list
-folders and messages, download documents and attachments.
+Your Danish digital mail on your own machine. Ebox reads both systems Danes get
+mail in, for you and for companies you represent, and keeps a local archive
+laid out like the e-Boks app:
 
-This is unofficial and not affiliated with e-Boks. The protocol was learned from
-[Net::Eboks](https://github.com/dk/Net-Eboks) by Dmitry Karasik (Perl, BSD
-2-clause), which this is a fresh implementation of, not a port of its code.
+- **e-Boks**, "Post fra virksomheder": banks, utilities, employers, insurers…
+- **Digital Post**, "Post fra det offentlige": Skat, your municipality and
+  other public authorities, which e-Boks, mit.dk and borger.dk only display.
 
-## Requirements
+After a one-time activation with MitID it runs unattended: no MitID and no
+password, so it can run from cron or launchd.
 
-- Elixir 1.18+ on Erlang/OTP 29.1 or newer (see [Erlang version](#erlang-version))
-- A mobile-access password from e-boks.dk (*Menu → Mobiladgang*) and MitID
+It is written in Elixir and can be used from the command line or as a library.
+It is unofficial and not affiliated with e-Boks A/S or the Agency for Digital
+Government. [How it connects](docs/how-it-connects.md) explains every request
+it makes and how they were found.
 
-## One-time activation
+## What you get
 
-e-Boks only accepts logins from devices whose public key is registered on your
-account, and registering takes one MitID login:
+```
+~/Mail/
+  Your Name/
+    Post fra virksomheder/
+      Indbakke/
+      Bank/
+        Kontoudskrift/
+          2025-05-04 Bank A_S - Kontoudskrift nr. 5 [ID].pdf
+          2025-05-04 Bank A_S - Kontoudskrift nr. 5 [ID].json
+      …every folder you have, also empty ones
+    Post fra det offentlige/
+      Skat/
+        2025-03-14 Skattestyrelsen - Årsopgørelse 2024 [ID].pdf
+        2025-03-14 Skattestyrelsen - Årsopgørelse 2024 [ID] - bilag.pdf
+        2025-03-14 Skattestyrelsen - Årsopgørelse 2024 [ID].json
+  Company ApS/
+    Post fra virksomheder/   (if the company's e-Boks is shared with you)
+    Post fra det offentlige/ (if you represent the company in Digital Post)
+```
 
+Each letter is stored as its files (the letter, then attachments) next to a
+`.json` holding what the service knows about it: sender, dates, reply
+deadline, read state, the folder it came from and the size of every file.
+
+Reading your mail with Ebox does not change it. Digital Post is read without
+side effects. e-Boks marks a letter read when it is downloaded, so Ebox marks
+letters that were unread as unread again right afterwards.
+
+## Quick start
+
+You need Elixir 1.18 or newer, MitID, and the mobile-access password from
+e-boks.dk (*Menu → Mobiladgang*; you need it once).
+
+    git clone https://github.com/chime-mu/ebox.git && cd ebox
     mix deps.get
-    mix ebox.auth
+    mix ebox.auth                       # one time: MitID in a browser, see below
+    mix ebox.archive ~/Mail             # download everything
+    mix ebox.verify ~/Mail              # check the archive against the services
 
-The task generates a key pair and device id for this machine, prints a login
-URL, and asks you to paste back the `eboksdk://ngdpoidc/callback?...` address
-the browser is sent to after you approve in MitID (it shows up in the developer
-tools' Network tab as the `Location` of the last request). It then registers the
-public key and does a test login.
+`mix ebox.archive` skips what it already has, so run it as often as you like.
+`--skip-inbox` leaves out the inboxes.
 
-What is stored, in `~/.config/ebox/` with mode `0600`:
+### Activation (`mix ebox.auth`)
 
-- `device_key.pem` – this machine's private key
-- `device.json` – device id, your CPR number and name
+The task prints a login address. Open it in a browser with the developer
+tools' Network tab open ("Preserve log" on) and log in with MitID. The login
+ends with a redirect to an address starting with `eboksdk://ngdpoidc/callback`,
+which only the e-Boks app can open, so the browser stops there. Copy that
+address (the `Location` of the last request) and paste it into the terminal.
+The code in it is short-lived, so be quick. The task then registers this
+machine as a device on your e-Boks account and stores the login.
 
-The password is never stored. Tasks read it from `EBOX_PASSWORD` or prompt for
-it. To revoke access, remove the "ebox-elixir" device under *Mobiladgang* on
-e-boks.dk and delete the directory.
+## Commands
 
-## Command line
+| Command | What it does |
+|---|---|
+| `mix ebox.auth` | One-time activation with MitID (registers this machine) |
+| `mix ebox.archive DIR [--skip-inbox] [--only e-boks\|digitalpost]` | Downloads all mailboxes into `DIR` |
+| `mix ebox.verify DIR [--skip-inbox] [--only …]` | Checks every message, file, size and folder; exits non-zero on problems |
+| `mix ebox.folders [--only …]` | Lists your mailboxes and folders in both systems |
+| `mix ebox.messages [FOLDER] [--mailbox NAME] [--take N]` | Lists e-Boks messages in a folder (default: inbox) |
+| `mix ebox.digitalpost.messages [--mailbox N]` | Lists Digital Post inboxes |
+| `mix ebox.digitalpost.renew` | Renews the stored login without reading mail |
+| `mix ebox.digitalpost.auth` | Logs in to Digital Post again with MitID, keeping the device |
 
-    mix ebox.folders                 # folders in your mailbox
-    mix ebox.folders --shares        # mailboxes shared with you
-    mix ebox.messages                # messages in Inbox
-    mix ebox.messages Arkiv --take 20
-    mix ebox.download --to ~/Documents/e-boks
+## Company mail
 
-`mix ebox.download` skips documents that are already present, so it can run
-from cron to keep a local copy up to date.
+A company has mail in both systems, just like a person:
+
+- **Digital Post**: if you represent the company (for example as owner), its
+  mailbox shows up next to yours automatically.
+- **e-Boks** (e-Boks Erhverv): log in to e-boks.dk with MitID choosing the
+  company profile, go to *Indstillinger → Adgange → Giv andre adgang*, and give
+  your own CPR number access, with "Administration" rights. Then log in once to
+  your private e-Boks on the web, where the share is accepted. From then on
+  the company's mailbox is listed next to yours.
 
 ## As a library
 
 ```elixir
-{:ok, box} = Ebox.connect(password: System.fetch_env!("EBOX_PASSWORD"))
+{:ok, dp} = Ebox.DigitalPost.connect()            # renews the stored login
+{:ok, eb} = Ebox.Eboks.connect(digitalpost: dp)   # e-Boks token from the same login
 
-{:ok, folders} = Ebox.folders(box)
-inbox = Enum.find(folders, &(&1.name == "Inbox"))
-
-{:ok, messages} = Ebox.messages(box, inbox.id, take: 20)
+# e-Boks: your mailbox first, then mailboxes shared with you
+[mine | _shared] = Ebox.Eboks.mailboxes(eb)
+{:ok, folders} = Ebox.Eboks.folders(eb, mine)
+inbox = Enum.find(folders, &(&1.type == "inbox"))
+{:ok, messages} = Ebox.Eboks.all_messages(eb, mine, inbox.id)
 
 for message <- messages do
-  {:ok, message} = Ebox.message(box, message)          # adds attachments
-  {:ok, document} = Ebox.content(box, message)
-  File.write!("#{message.id}.#{Ebox.Message.extension(message)}", document)
-
-  for attachment <- message.attachments do
-    {:ok, data} = Ebox.content(box, message, attachment)
-    File.write!("#{attachment.id}.#{Ebox.Message.extension(attachment)}", data)
+  {:ok, message} = Ebox.Eboks.message(eb, mine, message)     # adds attachments
+  for file <- message.files do
+    {:ok, data} = Ebox.Eboks.content(eb, mine, message, file) # marks it read…
+    File.write!("#{message.id}-#{file.id}.#{Ebox.Eboks.Message.extension(file)}", data)
   end
+  if message.unread, do: Ebox.Eboks.update(eb, mine, message, %{unread: true}) # …so undo that
 end
+
+# Digital Post: your mailbox first, then companies you represent
+[citizen | _orgs] = Ebox.DigitalPost.mailboxes(dp)
+{:ok, letters} = Ebox.DigitalPost.all_messages(dp, citizen.id)
+{:ok, pdf} = Ebox.DigitalPost.content(dp, hd(letters), hd(hd(letters).files))
+
+# Or all of it at once, as on the command line
+conns = %{digitalpost: dp, eboks: eb}
+{:ok, parts} = Ebox.Archive.plan(conns, "/path/to/Mail")
+Ebox.Archive.download(conns, parts)
 ```
 
-`Ebox.connect/1` returns a process that owns the session and logs in again when
-the session expires; `Ebox.start_link/1` is the same for a supervision tree.
-Errors are `{:error, %Ebox.Error{}}` with the failing step, HTTP status and
-e-Boks' own error code and text.
+Errors are `{:error, %Ebox.Error{}}` with the failing step, the HTTP status and
+the service's own message. Connections renew their tokens by themselves.
 
-## Erlang version
+## What is stored, and how to revoke it
 
-`rest.e-boks.dk` asks for an optional TLS client certificate and lists the CA
-names it accepts. One of those names is malformed (country `NOR`, where the
-standard allows two letters), and Erlang/OTP before 29.1 aborts the handshake
-on it with `handshake_decode_error`. OTP 29.1 skips names it cannot decode
-([erlang/otp#11595](https://github.com/erlang/otp/issues/11595)). `mise.toml`
-pins a working version for this project.
+In `~/.config/ebox/` (or `$EBOX_HOME`), directory mode `0700`, files `0600`:
+
+- `device_key.pem`, `device.json`: this machine's device key and id, your CPR
+  number and name.
+- `digitalpost.json`: the Digital Post login (a refresh token). **Whoever has
+  this file and the device files can read your mail in both systems.** Treat
+  the directory like a password.
+
+The mobile-access password is never stored. To revoke access, remove the
+"ebox-elixir" device under *Mobiladgang* on e-boks.dk and delete the directory.
+
+The login renews itself as long as it is used. How long an unused login
+survives is not known; if `mix ebox.digitalpost.renew` ever fails, run
+`mix ebox.digitalpost.auth` (MitID) again.
 
 ## Tests
 
     mix test
 
-The tests run against `Ebox.FakeEboks`, an in-process stand-in built from what
-the reference client sends and expects plus the error responses observed from
-the real service.
+The tests run against in-process fakes of the services (`test/support/`),
+shaped after the published Digital Post API description, the routes in the
+e-Boks app and responses observed from production. They never touch the
+network.
+
+## Credits
+
+The original e-Boks login and mail protocol were learned from
+[Net::Eboks](https://github.com/dk/Net-Eboks) by Dmitry Karasik. Digital Post is
+read through the Agency for Digital Government's documented API.

@@ -13,9 +13,11 @@ defmodule Ebox.Auth do
        password, reads your CPR number from your profile and uploads the
        device's public key.
 
-  After that `Ebox.connect/1` works without MitID until you remove the device
-  under *Menu → Mobiladgang* on e-boks.dk. `mix ebox.auth` drives all of this
-  interactively.
+  The Digital Post tokens from step 3 are stored (`Ebox.DigitalPost`), and from
+  then on `eboks_token/2` turns them into e-Boks tokens for the registered
+  device, without MitID or password, until you remove the device under
+  *Menu → Mobiladgang* on e-boks.dk. `mix ebox.auth` drives all of this
+  interactively. See `docs/how-it-connects.md` for the whole picture.
   """
 
   alias Ebox.{Device, Error}
@@ -100,46 +102,16 @@ defmodule Ebox.Auth do
   end
 
   @doc """
-  Finishes activation and returns the device with `cpr`, `name` and
-  `activated: true` set. The caller is responsible for `Ebox.Device.save/1`.
+  Finishes activation. Returns the device with `cpr`, `name` and
+  `activated: true` set, plus the Digital Post tokens the MitID login yielded,
+  which `Ebox.DigitalPost` uses to read mail from public authorities. The caller
+  is responsible for `Ebox.Device.save/1` and `Ebox.DigitalPost.save_tokens/2`.
   """
   @spec activate(t(), String.t(), Device.t(), String.t()) ::
-          {:ok, Device.t()} | {:error, Error.t()}
+          {:ok, Device.t(), map()} | {:error, Error.t()}
   def activate(%__MODULE__{} = auth, code, %Device{} = device, password) do
-    with {:ok, %{"access_token" => digitalpost_token}} <-
-           post(:digitalpost_token, @token_url,
-             params: [
-               grant_type: "authorization_code",
-               redirect_uri: @redirect_uri,
-               client_id: @digitalpost_client,
-               code: code,
-               code_verifier: auth.code_verifier
-             ],
-             auth: {:basic, @digitalpost_client <> ":" <> @digitalpost_secret}
-           ),
-         {:ok, %{"userToken" => user_token}} <-
-           post(:user_token, @usertoken_url,
-             # The request has no content, but the server answers 411 to a POST
-             # without Content-Length, and Req only sends one when there is a body.
-             body: "",
-             auth: {:bearer, digitalpost_token},
-             headers: [
-               {"content-length", "0"},
-               {"x-operation-id", "LoginService_UserToken"},
-               {"content-type", "application/json-patch+json"}
-             ]
-           ),
-         {:ok, %{"access_token" => token}} <-
-           post(:eboks_token, @eboks_token_url,
-             form: [
-               usertoken: user_token,
-               grant_type: "usertoken",
-               scope: "mobileapi offline_access",
-               client_id: @eboks_client,
-               client_secret: @eboks_secret,
-               deviceid: device.id
-             ]
-           ),
+    with {:ok, %{"access_token" => digitalpost_token} = digitalpost} <- exchange_code(auth, code),
+         {:ok, %{"access_token" => token}} <- eboks_token(digitalpost_token, device),
          {:ok, _} <-
            post(:verify_password, @mobile_api <> "/user/mobileaccess/password/verify",
              form: [password: password],
@@ -157,7 +129,7 @@ defmodule Ebox.Auth do
                os: "elixir"
              }
            ) do
-      {:ok, %{device | cpr: cpr, name: profile["name"], activated: true}}
+      {:ok, %{device | cpr: cpr, name: profile["name"], activated: true}, digitalpost}
     else
       {:error, %Error{}} = error ->
         error
@@ -169,6 +141,65 @@ defmodule Ebox.Auth do
          )}
     end
   end
+
+  @doc """
+  Trades a Digital Post access token for an e-Boks mobile API token (via an
+  e-Boks user token). No MitID is involved, so a stored Digital Post login is
+  enough to reach the mobile API (`#{@mobile_api}`).
+  """
+  @spec eboks_token(String.t(), Device.t()) :: {:ok, map()} | {:error, Error.t()}
+  def eboks_token(digitalpost_token, %Device{} = device) do
+    with {:ok, %{"userToken" => user_token}} <-
+           post(:user_token, @usertoken_url,
+             # The request has no content, but the server answers 411 to a POST
+             # without Content-Length, and Req only sends one when there is a body.
+             body: "",
+             auth: {:bearer, digitalpost_token},
+             headers: [
+               {"content-length", "0"},
+               {"x-operation-id", "LoginService_UserToken"},
+               {"content-type", "application/json-patch+json"}
+             ]
+           ) do
+      post(:eboks_token, @eboks_token_url,
+        form: [
+          usertoken: user_token,
+          grant_type: "usertoken",
+          scope: "mobileapi offline_access",
+          client_id: @eboks_client,
+          client_secret: @eboks_secret,
+          deviceid: device.id
+        ]
+      )
+    end
+  end
+
+  @doc false
+  def mobile_api, do: @mobile_api
+
+  @doc """
+  Trades the code from a MitID login (`start/1`) for Digital Post tokens: an
+  access token valid for 20 minutes and a refresh token to renew it.
+  """
+  @spec exchange_code(t(), String.t()) :: {:ok, map()} | {:error, Error.t()}
+  def exchange_code(%__MODULE__{} = auth, code) do
+    post(:digitalpost_token, @token_url,
+      params: [
+        grant_type: "authorization_code",
+        redirect_uri: @redirect_uri,
+        client_id: @digitalpost_client,
+        code: code,
+        code_verifier: auth.code_verifier
+      ],
+      auth: digitalpost_client_auth()
+    )
+  end
+
+  @doc false
+  # The token endpoint and client credentials, shared with Ebox.DigitalPost.
+  def digitalpost_token_url, do: @token_url
+  def digitalpost_client_id, do: @digitalpost_client
+  def digitalpost_client_auth, do: {:basic, @digitalpost_client <> ":" <> @digitalpost_secret}
 
   defp post(step, url, options), do: request(step, :post, url, options)
 

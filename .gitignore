@@ -23,5 +23,5 @@ erl_crash.dump
 ebox-*.tar
 
 
-# Default target of `mix ebox.download`: private mail, never commit.
+# Private mail, never commit (an archive made inside the repo, e.g. mix ebox.archive ebox-mail).
 /ebox-mail/

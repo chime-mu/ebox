@@ -2,12 +2,14 @@ defmodule Mix.Tasks.Ebox.Auth do
   @shortdoc "Activates this machine as an e-Boks device using MitID (one time)"
 
   @moduledoc """
-  Registers this machine as a device on your e-Boks account.
+  Registers this machine as a device on your e-Boks account and stores the
+  Digital Post login from the same MitID login. Together they give access to
+  e-Boks and Digital Post from then on, without MitID or password.
 
       mix ebox.auth
 
-  You need the mobile-access password from e-boks.dk (*Menu → Mobiladgang*) and
-  your MitID. The task prints a login URL; open it in a browser with the
+  You need the mobile-access password from e-boks.dk (*Menu → Mobiladgang*),
+  once, and your MitID. The task prints a login URL; open it in a browser with the
   developer tools' Network tab open, approve with MitID, and paste the final
   `eboksdk://ngdpoidc/callback?...` URL back here.
 
@@ -56,15 +58,26 @@ defmodule Mix.Tasks.Ebox.Auth do
       |> then(&Auth.parse_callback(auth, &1))
       |> CLI.ok!()
 
-    device = CLI.ok!(Auth.activate(auth, code, device, password))
-    Device.save(device)
+    device =
+      case Auth.activate(auth, code, device, password) do
+        {:ok, device, digital_post} ->
+          Device.save(device)
+
+          with {:error, error} <- Ebox.DigitalPost.save_tokens(digital_post),
+               do: Mix.raise(Exception.message(error))
+
+          device
+
+        {:error, error} ->
+          Mix.raise(Exception.message(error))
+      end
+
     Mix.shell().info("Device #{device.id} registered for #{device.name || "your account"}.")
 
-    case Ebox.connect(password: password, device: device) do
-      {:ok, box} ->
-        Device.save(Ebox.whoami(box).device)
-        folders = CLI.ok!(Ebox.folders(box))
-        Mix.shell().info("Login works. Folders: " <> Enum.map_join(folders, ", ", & &1.name))
+    case Ebox.Eboks.connect() do
+      {:ok, eb} ->
+        names = Enum.map_join(Ebox.Eboks.mailboxes(eb), ", ", & &1.name)
+        Mix.shell().info("Login works. e-Boks mailboxes: #{names}. Next: mix ebox.archive DIR")
 
       {:error, error} ->
         Mix.raise(

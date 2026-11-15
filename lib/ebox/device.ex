@@ -2,27 +2,28 @@ defmodule Ebox.Device do
   @moduledoc """
   The local "device" identity that e-Boks knows this connector as.
 
-  e-Boks authenticates its mobile clients with a device id plus an RSA key whose
-  public half is registered on your account (see `Ebox.Auth`). A device is
+  e-Boks ties the tokens of its mobile clients to a device id that has been
+  registered on your account, with the public half of an RSA key
+  (see `Ebox.Auth`). A device is
   generated once per installation and stored under `~/.config/ebox/`
   (`$EBOX_HOME` or `$XDG_CONFIG_HOME/ebox` override the location):
 
-    * `device.json` – device id, CPR number, name and the login signature hash that worked
+    * `device.json` – device id, CPR number and name
     * `device_key.pem` – the RSA private key
 
   Both files are written with mode `0600`. The mobile-access password is never
-  stored.
+  stored. The Digital Post login (`digitalpost.json`, see `Ebox.DigitalPost`)
+  lives in the same directory.
   """
 
   @derive {Inspect, except: [:private_key, :cpr]}
-  defstruct [:id, :private_key, :cpr, :name, :sig_hash, activated: false]
+  defstruct [:id, :private_key, :cpr, :name, activated: false]
 
   @type t :: %__MODULE__{
           id: String.t(),
           private_key: tuple(),
           cpr: String.t() | nil,
           name: String.t() | nil,
-          sig_hash: :sha | :sha256 | nil,
           activated: boolean()
         }
 
@@ -41,12 +42,6 @@ defmodule Ebox.Device do
     public = {:RSAPublicKey, elem(key, 2), elem(key, 3)}
     {:SubjectPublicKeyInfo, der, _} = :public_key.pem_entry_encode(:SubjectPublicKeyInfo, public)
     Base.encode64(der)
-  end
-
-  @doc "RSA PKCS#1 v1.5 signature of `data`, base64 encoded."
-  @spec sign(t(), binary(), :sha | :sha256) :: String.t()
-  def sign(%__MODULE__{private_key: key}, data, hash) do
-    data |> :public_key.sign(hash, key) |> Base.encode64()
   end
 
   @doc "Directory holding the device files."
@@ -70,7 +65,6 @@ defmodule Ebox.Device do
          id: meta["device_id"],
          cpr: meta["cpr"],
          name: meta["name"],
-         sig_hash: sig_hash(meta["sig_hash"]),
          activated: meta["activated"] == true,
          private_key: :public_key.pem_entry_decode(entry)
        }}
@@ -94,7 +88,6 @@ defmodule Ebox.Device do
         device_id: device.id,
         cpr: device.cpr,
         name: device.name,
-        sig_hash: device.sig_hash,
         activated: device.activated
       })
 
@@ -102,12 +95,9 @@ defmodule Ebox.Device do
     write_private!(Path.join(dir, "device.json"), meta)
   end
 
-  defp sig_hash("sha"), do: :sha
-  defp sig_hash("sha256"), do: :sha256
-  defp sig_hash(_), do: nil
-
-  # Create with 0600 before any secret is written into the file.
-  defp write_private!(path, content) do
+  @doc false
+  # Creates the file with mode 0600 before any secret is written into it.
+  def write_private!(path, content) do
     File.touch!(path)
     File.chmod!(path, 0o600)
     File.write!(path, content)

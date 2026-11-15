@@ -3,9 +3,9 @@ defmodule Ebox.Error do
   Error returned by every `Ebox` call.
 
   `step` names the operation that failed, `status` is the HTTP status when the
-  server answered, `code` is e-Boks' own error code when it sent one, and `body`
+  server answered, `code` is the service's own error code when it sent one, and `body`
   is the raw response body (useful when e-Boks changes something and the
-  connector needs adjusting).
+  client needs adjusting).
   """
   defexception [:step, :status, :code, :message, :body]
 
@@ -36,21 +36,6 @@ defmodule Ebox.Error do
   @doc false
   def from_exception(step, exception) do
     new(step, "#{step} failed: #{Exception.message(exception)}")
-  end
-
-  # The mobile XML API answers errors with <Error><ErrorCode/><ErrorText/></Error>.
-  defp describe("<Error" <> _ = body) do
-    with {:ok, doc} <- Ebox.XML.parse(body),
-         [%{text: text} | _] <- Ebox.XML.children(doc, "ErrorText") do
-      code =
-        with [%{text: code} | _] <- Ebox.XML.children(doc, "ErrorCode"),
-             do: code,
-             else: (_ -> nil)
-
-      {code, ": #{text}" <> if(code, do: " (e-Boks error #{code})", else: "")}
-    else
-      _ -> {nil, text_detail(body)}
-    end
   end
 
   defp describe(%{"description" => %{"text" => text}}) when is_binary(text),
