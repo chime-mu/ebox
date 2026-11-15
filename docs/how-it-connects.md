@@ -106,7 +106,8 @@ e-Boks token (300 s) ───────────────────�
 
 - The Digital Post refresh token **does not rotate**: renewing returns a new
   access token and leaves the refresh token as it was. How long an unused
-  refresh token survives is not known. It has survived idle gaps of hours.
+  refresh token survives is not known; it has been seen to survive at least half
+  an hour unused.
   Running `mix ebox.digitalpost.renew` regularly keeps it in use.
 - The e-Boks token lives 5 minutes. Ebox simply repeats steps 3–4 when it is
   about to expire. The response also carries an e-Boks refresh token, which
