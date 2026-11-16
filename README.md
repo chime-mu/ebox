@@ -107,6 +107,10 @@ Ebox can also help you deal with what arrives:
 - One click adds an Apple Reminder (list "Post", due on the respond-by date,
   with a link back to the letter). Filing a letter from the app moves it in the
   service and locally, and can make a rule so the next ones are routine.
+- Opening a letter shows it next to the list with its attachments, read from
+  the local archive. After filing, the next letter opens; `j` and `k` move
+  through the list. A letter's HTML runs sandboxed and loads nothing from the
+  internet.
 
 Claude is called through Claude Code's command line (`claude -p`, your own
 login, no tools), so the text of the letters it evaluates is sent to Anthropic.

@@ -71,9 +71,23 @@ defmodule Ebox.Triage do
   The folder paths of a letter's mailbox, from the local archive (which holds
   every folder of the service, also empty ones). The inbox is left out.
   """
-  def local_folders(%Letter{} = letter) do
-    root = system_root(letter)
+  def local_folders(%Letter{} = letter), do: folders_at(system_root(letter))
 
+  @doc """
+  What filing one letter needs: `%{rule: matching rule or nil, folders:
+  local_folders/1, suggested: folder path or nil}`.
+  """
+  def context(archive, %Letter{} = letter) do
+    rule = Rules.match(Rules.load(archive), letter)
+
+    %{
+      rule: rule,
+      folders: local_folders(letter),
+      suggested: (rule || %{})["folder"] || (Letter.evaluation(letter) || %{})["folder"]
+    }
+  end
+
+  defp folders_at(root) do
     root
     |> Path.join("**")
     |> Path.wildcard()

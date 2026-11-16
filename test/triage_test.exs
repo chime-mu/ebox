@@ -222,7 +222,7 @@ defmodule Ebox.TriageTest do
     conn = Plug.Test.conn(:get, "http://127.0.0.1/") |> Ebox.Web.call([])
     assert conn.status == 200
     assert conn.resp_body =~ "Personligt brev"
-    assert conn.resp_body =~ "respond by 2026-11-20"
+    assert conn.resp_body =~ ~s(<script src="/app.js")
 
     conn = Plug.Test.conn(:get, "http://evil.example/") |> Ebox.Web.call([])
     assert conn.status == 403
@@ -236,6 +236,15 @@ defmodule Ebox.TriageTest do
 
     assert conn.status == 403
 
+    # The page's script asks for JSON instead of a redirect.
+    conn =
+      Plug.Test.conn(:post, "http://127.0.0.1/letter/nope/file", "t=s3cret&folder=Nope")
+      |> form()
+      |> Plug.Conn.put_req_header("accept", "application/json")
+      |> Ebox.Web.call([])
+
+    assert %{"ok" => false, "gone" => false, "msg" => _} = JSON.decode!(conn.resp_body)
+
     conn = Plug.Test.conn(:get, "http://127.0.0.1/letter/#{key}/file/0") |> Ebox.Web.call([])
     assert conn.status == 200
     assert conn.resp_body =~ "%PDF"
@@ -243,6 +252,51 @@ defmodule Ebox.TriageTest do
     assert Plug.Test.conn(:get, "http://127.0.0.1/letter/#{key}/file/5")
            |> Ebox.Web.call([])
            |> Map.get(:status) == 404
+  end
+
+  test "a letter's page shows its files; HTML from a letter runs sandboxed", %{archive: archive} do
+    :persistent_term.put(Ebox.Web, %{archive: archive, port: 4100, secret: "s3cret"})
+    {:ok, _} = start_supervised(%{id: :jobs, start: {Ebox.Web.Jobs, :start_link, []}})
+    l = letter(archive, "N2")
+
+    # A letter with an HTML attachment that tries to run a script.
+    html = Path.join(Path.dirname(l.json_path), "x [N2] - Bilag.html")
+    File.write!(html, "<script>fetch('/')</script><p>Hej</p>")
+
+    Letter.update_meta!(l, fn meta ->
+      Map.update!(meta, "files", &(&1 ++ [%{"name" => Path.basename(html), "size" => 40}]))
+    end)
+
+    get = fn path -> Plug.Test.conn(:get, "http://127.0.0.1" <> path) |> Ebox.Web.call([]) end
+
+    conn = get.("/letter/#{l.key}")
+    assert conn.status == 200
+    assert conn.resp_body =~ "Personligt brev"
+    assert conn.resp_body =~ ~s(<iframe class="viewer" src="/letter/#{l.key}/file/0#view=FitH&navpanes=0")
+    assert conn.resp_body =~ "Bilag"
+    assert conn.resp_body =~ ~s(name="from" value="letter")
+    assert conn.resp_body =~ ~s(<nav id="list")
+
+    # Only the pane, for the page's script.
+    n = length(l.files)
+    conn = get.("/letter/#{l.key}?f=#{n}&pane=1")
+    assert conn.resp_body =~ ~s(src="/letter/#{l.key}/file/#{n}" sandbox)
+    refute conn.resp_body =~ ~s(<nav id="list")
+
+    assert get.("/app.js").resp_body =~ "addEventListener"
+
+    conn = get.("/letter/#{l.key}/file/#{n}")
+    assert conn.resp_body =~ "<p>Hej</p>"
+    [csp] = Plug.Conn.get_resp_header(conn, "content-security-policy")
+    assert csp =~ "sandbox"
+    assert csp =~ "default-src 'none'"
+
+    conn = get.("/letter/#{l.key}/file/0?download=1")
+    assert [disp] = Plug.Conn.get_resp_header(conn, "content-disposition")
+    assert disp =~ "attachment"
+    assert Plug.Conn.get_resp_header(conn, "content-security-policy") == []
+
+    assert get.("/letter/nope").status == 404
   end
 
   defp form(conn),

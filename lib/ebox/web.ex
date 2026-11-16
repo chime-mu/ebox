@@ -63,18 +63,82 @@ defmodule Ebox.Web do
     html(conn, Html.index(overview, Jobs.status(), conn.query_params["msg"], config().secret))
   end
 
+  get "/app.js" do
+    conn
+    |> put_resp_content_type("text/javascript")
+    |> send_resp(200, Ebox.Web.Js.source())
+  end
+
+  get "/jobs" do
+    %{running: running, done: done, total: total} = Jobs.status()
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, JSON.encode!(%{running: running, done: done, total: total}))
+  end
+
   get "/rules" do
     html(conn, Html.rules(Rules.load(archive()), conn.query_params["msg"], config().secret))
   end
 
+  get "/letter/:key" do
+    case Letter.find(archive(), key) do
+      nil ->
+        send_resp(conn, 404, "not found")
+
+      letter ->
+        n =
+          case Integer.parse(conn.query_params["f"] || "0") do
+            {n, ""} when n >= 0 and n < length(letter.files) -> n
+            _ -> 0
+          end
+
+        ctx = Triage.context(archive(), letter)
+
+        if conn.query_params["pane"] do
+          html(conn, Html.pane(letter, ctx, n, config().secret))
+        else
+          overview = Triage.overview(archive())
+          msg = conn.query_params["msg"]
+          html(conn, Html.letter(letter, overview, ctx, n, msg, config().secret, Jobs.status()))
+        end
+    end
+  end
+
+  # The letter's own files. They come from outside, so a page in them must not
+  # run scripts in this app's origin or load anything from the net: HTML-like
+  # files get a sandbox, PDFs are left to the browser's viewer (which refuses
+  # to work in a sandbox and does not run the page's scripts in this origin).
   get "/letter/:key/file/:n" do
     with %Letter{} = letter <- Letter.find(archive(), key),
          {n, ""} <- Integer.parse(n),
          path when is_binary(path) <- Enum.at(Letter.file_paths(letter), n),
          true <- File.regular?(path) do
+      type = Html.file_type(path)
+      name = Html.file_label(Enum.at(letter.files, n)["name"])
+
+      disposition =
+        if conn.query_params["download"] || type == "application/octet-stream",
+          do: "attachment",
+          else: "inline"
+
       conn
-      |> put_resp_content_type(MIME.from_path(path), nil)
-      |> put_resp_header("content-disposition", "inline")
+      |> put_resp_content_type(type, nil)
+      |> put_resp_header("x-content-type-options", "nosniff")
+      |> put_resp_header(
+        "content-disposition",
+        "#{disposition}; filename*=UTF-8''" <> URI.encode(name, &URI.char_unreserved?/1)
+      )
+      |> then(fn conn ->
+        if type == "application/pdf",
+          do: conn,
+          else:
+            put_resp_header(
+              conn,
+              "content-security-policy",
+              "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:"
+            )
+      end)
       |> send_file(200, path)
     else
       _ -> send_resp(conn, 404, "not found")
@@ -156,18 +220,53 @@ defmodule Ebox.Web do
   defp with_letter(conn, key, fun) do
     case Letter.find(archive(), key) do
       nil ->
-        back(conn, "That letter is no longer in the archive where it was")
+        msg = "That letter is no longer in the archive where it was"
+
+        if json?(conn),
+          do:
+            conn
+            |> put_resp_content_type("application/json")
+            |> send_resp(200, JSON.encode!(%{ok: false, msg: msg, gone: false})),
+          else: back(conn, msg)
 
       letter ->
-        case fun.(letter) do
-          msg when is_binary(msg) -> back(conn, msg, letter.key)
-          {:error, %{__exception__: true} = e} -> back(conn, Exception.message(e), letter.key)
-          {:error, other} -> back(conn, inspect(other), letter.key)
+        {ok, msg} =
+          case fun.(letter) do
+            msg when is_binary(msg) -> {true, msg}
+            {:error, %{__exception__: true} = e} -> {false, Exception.message(e)}
+            {:error, other} -> {false, inspect(other)}
+          end
+
+        if json?(conn) do
+          # The page's script: `gone` when the letter left the inbox.
+          gone = ok and List.last(conn.path_info) == "file"
+
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(200, JSON.encode!(%{ok: ok, msg: msg, gone: gone}))
+        else
+          back(conn, msg, letter.key)
         end
     end
   end
 
-  defp back(conn, msg, anchor \\ nil) do
+  defp json?(conn),
+    do: Enum.any?(get_req_header(conn, "accept"), &String.contains?(&1, "application/json"))
+
+  # Back to the letter's own page when the form came from there, else to the
+  # inbox at the letter.
+  defp back(conn, msg, key) do
+    if conn.body_params["from"] == "letter" do
+      location = "/letter/#{key}?" <> URI.encode_query(msg: msg)
+      conn |> put_resp_header("location", location) |> send_resp(303, "")
+    else
+      back_to_inbox(conn, msg, key)
+    end
+  end
+
+  defp back(conn, msg), do: back_to_inbox(conn, msg, nil)
+
+  defp back_to_inbox(conn, msg, anchor) do
     location = "/?" <> URI.encode_query(msg: msg) <> if(anchor, do: "#l-#{anchor}", else: "")
     conn |> put_resp_header("location", location) |> send_resp(303, "")
   end
