@@ -1,6 +1,6 @@
 defmodule Ebox.DigitalPost do
   @moduledoc ~S"""
-  Read-only access to Digital Post: mail from public authorities ("Offentlig
+  Access to Digital Post: mail from public authorities ("Offentlig
   post") in your own mailbox and in mailboxes of companies you represent.
 
   This mail is not stored by e-Boks but in the state's central Digital Post
@@ -19,7 +19,8 @@ defmodule Ebox.DigitalPost do
       {:ok, pdf} = Ebox.DigitalPost.content(dp, message, file)
 
   Reading never changes anything: messages stay unread, and nothing is marked
-  as legally notified.
+  as legally notified. `update/3` is the one call that changes a message
+  (move it to another folder, mark it read or unread).
 
   ## Login
 
@@ -180,6 +181,27 @@ defmodule Ebox.DigitalPost do
   def content(dp, %Message{} = message, %Message.File{} = file),
     do: GenServer.call(dp, {:content, message, file}, @timeout)
 
+  @doc "One message, fresh from the service (with its current `version` in `attrs`)."
+  @spec message(dp, String.t(), String.t()) :: {:ok, Message.t()} | {:error, Error.t()}
+  def message(dp, mailbox_id, id), do: GenServer.call(dp, {:message, mailbox_id, id}, @timeout)
+
+  @doc """
+  Changes a message: `patch` holds any of `"folderId"` (move), `"read"`,
+  `"flag"`, `"note"`. The message's current version is fetched first and sent
+  as `If-Match`, so a change never overwrites one made elsewhere in between.
+  Returns the updated message.
+  """
+  @spec update(dp, String.t(), String.t(), map()) :: {:ok, Message.t()} | {:error, Error.t()}
+  def update(dp, mailbox_id, id, patch) when is_map(patch) do
+    with {:ok, current} <- message(dp, mailbox_id, id),
+         do:
+           GenServer.call(
+             dp,
+             {:update, mailbox_id, id, current.attrs["version"], patch},
+             @timeout
+           )
+  end
+
   ## GenServer
 
   @impl true
@@ -311,7 +333,32 @@ defmodule Ebox.DigitalPost do
     request(:content, path, [], state, decode_body: false)
   end
 
+  defp run({:message, mailbox_id, id}, state) do
+    case get(:message, "/mailboxes/#{mailbox_id}/messages/#{id}", [], state) do
+      {:ok, %{"id" => _} = json} -> {:ok, Message.from_json(json)}
+      {:ok, other} -> {:error, unexpected(:message, other)}
+      error -> error
+    end
+  end
+
+  defp run({:update, mailbox_id, id, version, patch}, state) do
+    options = [
+      method: :patch,
+      json: patch,
+      headers: [{"if-match", to_string(version)}],
+      retry: false
+    ]
+
+    case request(:update, "/mailboxes/#{mailbox_id}/messages/#{id}", [], state, options) do
+      {:ok, %{"id" => _} = json} -> {:ok, Message.from_json(json)}
+      {:ok, _} -> message_after_update(mailbox_id, id, state)
+      error -> error
+    end
+  end
+
   defp get(step, path, params, state), do: request(step, path, params, state, [])
+
+  defp message_after_update(mailbox_id, id, state), do: run({:message, mailbox_id, id}, state)
 
   defp request(step, path, params, state, options) do
     req =
@@ -322,11 +369,11 @@ defmodule Ebox.DigitalPost do
           params: params,
           auth: {:bearer, state.tokens["access_token"]},
           # Digital Post rate-limits (429) bulk downloads; back off and retry,
-          # honouring Retry-After. Only GETs pass through here.
+          # honouring Retry-After. Writes pass retry: false.
           retry: :safe_transient,
           max_retries: 6
-        ] ++
-          options
+        ]
+        |> Keyword.merge(options)
       )
 
     case Req.request(req) do

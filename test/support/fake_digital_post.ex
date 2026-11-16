@@ -103,6 +103,10 @@ defmodule Ebox.FakeDigitalPost do
       revoked? or get_req_header(conn, "authorization") != [expected] ->
         conn |> put_status(401) |> Req.Test.json(%{error: "Unauthorized", status: 401})
 
+      conn.method == "PATCH" ->
+        Agent.update(agent, &%{&1 | writes: &1.writes + 1})
+        patch(String.split(path, "/", trim: true), conn, agent)
+
       conn.method != "GET" ->
         Agent.update(agent, &%{&1 | writes: &1.writes + 1})
         send_resp(conn, 405, "")
@@ -144,6 +148,13 @@ defmodule Ebox.FakeDigitalPost do
     page(conn, "messages", Enum.slice(all, page * size, size))
   end
 
+  defp route(["mailboxes", mailbox, "messages", id], conn, agent) do
+    case find(agent, mailbox, id) do
+      nil -> error(conn, 404, "not_found")
+      message -> Req.Test.json(conn, message)
+    end
+  end
+
   defp route(
          [
            "mailboxes",
@@ -163,6 +174,41 @@ defmodule Ebox.FakeDigitalPost do
     |> put_resp_content_type("application/pdf")
     |> send_resp(200, pdf(message, document, file))
   end
+
+  # PATCH a message: If-Match must name its current version; each change
+  # increments it, as the real service does.
+  defp patch(["mailboxes", mailbox, "messages", id], conn, agent) do
+    {:ok, body, conn} = read_body(conn)
+    changes = JSON.decode!(body)
+
+    case find(agent, mailbox, id) do
+      nil ->
+        error(conn, 404, "not_found")
+
+      message ->
+        if get_req_header(conn, "if-match") != [to_string(message.version)] do
+          error(conn, 409, "version_conflict")
+        else
+          updated =
+            Enum.reduce(changes, %{message | version: message.version + 1}, fn
+              {"folderId", f}, m -> %{m | folderId: f}
+              {"read", r}, m -> %{m | read: r}
+              {k, v}, m -> Map.put(m, String.to_atom(k), v)
+            end)
+
+          Agent.update(agent, fn state ->
+            %{state | messages: Enum.map(state.messages, &if(&1.id == id, do: updated, else: &1))}
+          end)
+
+          Req.Test.json(conn, updated)
+        end
+    end
+  end
+
+  defp patch(_, conn, _agent), do: send_resp(conn, 405, "")
+
+  defp find(agent, mailbox, id),
+    do: Enum.find(get(agent, :messages), &(&1.mailboxId == mailbox and &1.id == id))
 
   # The main document's body matches the fileSize the listing advertises.
   def pdf(message, document, file) do
@@ -191,6 +237,7 @@ defmodule Ebox.FakeDigitalPost do
       read: Keyword.get(opts, :read, false),
       replyByDateTime: opts[:reply_by],
       legallyNotified: false,
+      version: 1,
       documents: [
         %{
           id: "doc-#{n}",

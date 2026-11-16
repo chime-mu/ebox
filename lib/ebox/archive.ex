@@ -127,6 +127,15 @@ defmodule Ebox.Archive do
     end)
   end
 
+  @doc """
+  Every folder with its local path (directory names below the system
+  directory), as `plan/3` lays them out.
+  """
+  def folder_paths(folders) do
+    tree = tree(folders, fn _ -> false end, [])
+    for folder <- folders, do: {folder, elem(tree.place.(folder.id), 1)}
+  end
+
   # Folder paths by id; inboxes (and their subfolders) left out with :skip_inbox.
   defp tree(folders, inbox?, opts) do
     by_id = Map.new(folders, &{&1.id, &1})

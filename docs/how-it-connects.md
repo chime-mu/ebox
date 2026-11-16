@@ -106,8 +106,8 @@ e-Boks token (300 s) ───────────────────�
 
 - The Digital Post refresh token **does not rotate**: renewing returns a new
   access token and leaves the refresh token as it was. How long an unused
-  refresh token survives is not known; it has been seen to survive at least half
-  an hour unused.
+  refresh token survives is not known; it has been seen to survive at least
+  eight hours unused.
   Running `mix ebox.digitalpost.renew` regularly keeps it in use.
 - The e-Boks token lives 5 minutes. Ebox simply repeats steps 3–4 when it is
   about to expire. The response also carries an e-Boks refresh token, which
@@ -143,7 +143,8 @@ Government's OpenAPI document
 - **Reading has no side effects.** Listing, fetching and downloading leave
   messages unread and do not set `legallyNotified`.
 - `PATCH` was verified for `read` and `folderId`. Every change increments
-  `version` (also sent as the `ETag`). Ebox does not wrap it yet.
+  `version` (also sent as the `ETag`). `Ebox.DigitalPost.update/4` fetches
+  the current version and sends it as `If-Match`.
 - Bulk downloads are rate-limited with HTTP 429. Ebox backs off and retries.
 
 ## 5. e-Boks API

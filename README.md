@@ -80,8 +80,38 @@ machine as a device on your e-Boks account and stores the login.
 | `mix ebox.folders [--only …]` | Lists your mailboxes and folders in both systems |
 | `mix ebox.messages [FOLDER] [--mailbox NAME] [--take N]` | Lists e-Boks messages in a folder (default: inbox) |
 | `mix ebox.digitalpost.messages [--mailbox N]` | Lists Digital Post inboxes |
+| `mix ebox.rules DIR` | Learns rules from how your letters are filed (`DIR/.ebox/rules.json`) |
+| `mix ebox.triage DIR [--evaluate] [--limit N] [--file-routine]` | Reports on the inboxes; lets Claude evaluate new letters; files routine mail |
+| `mix ebox.web DIR [--port N]` | The local web app over your inboxes |
 | `mix ebox.digitalpost.renew` | Renews the stored login without reading mail |
 | `mix ebox.digitalpost.auth` | Logs in to Digital Post again with MitID, keeping the device |
+
+## Handling new mail
+
+Ebox can also help you deal with what arrives:
+
+    mix ebox.archive ~/Mail             # fetch new mail, inboxes included
+    mix ebox.rules ~/Mail               # learn where letters go from how you filed them
+    mix ebox.triage ~/Mail --evaluate   # Claude reads new letters (needs Claude Code)
+    mix ebox.web ~/Mail                 # http://127.0.0.1:4100/
+
+- **Routine mail** (statements, payment overviews, payslips) is filed into its
+  folder, in the service and locally, without asking. A letter is routine when
+  a rule you made matches it, or when a learned rule knows its folder *and*
+  Claude found nothing to do in it.
+- **Everything else** is listed in the web app for you to judge, ordered by
+  priority: 1 urgent and important, 2 important, 3 urgent, 4 neither.
+  *Important* is Claude's judgement; *urgent* means the latest date to respond
+  (Digital Post's own reply deadline, or one Claude read in the letter) is
+  within 14 days. Deadlines more than 30 days past count as expired.
+- One click adds an Apple Reminder (list "Post", due on the respond-by date,
+  with a link back to the letter). Filing a letter from the app moves it in the
+  service and locally, and can make a rule so the next ones are routine.
+
+Claude is called through Claude Code's command line (`claude -p`, your own
+login, no tools), so the text of the letters it evaluates is sent to Anthropic.
+Its evaluation is stored in the letter's `.json`. Filing never changes read
+state.
 
 ## Company mail
 
